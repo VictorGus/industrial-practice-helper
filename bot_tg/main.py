@@ -3,7 +3,7 @@ from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandle
 
 from common.config import get_telegram_token
 from common.logger import log
-from bot_tg.handlers import start, status, sync, handle_text, handle_callback, handle_document
+from bot_tg.handlers import start, help_command, status, sync, handle_text, handle_callback, handle_document
 
 
 def run() -> None:
@@ -15,6 +15,7 @@ def run() -> None:
     )
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("sync", sync))
     app.add_handler(CallbackQueryHandler(handle_callback))

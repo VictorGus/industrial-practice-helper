@@ -21,6 +21,17 @@ lint:
 test:
 	$(VENV)/bin/pytest -v
 
+build: install
+	$(VENV)/bin/pyinstaller --onefile --name practice-bot \
+		--hidden-import=common \
+		--hidden-import=common.config \
+		--hidden-import=common.storage \
+		--hidden-import=common.logger \
+		--hidden-import=bot_tg \
+		--hidden-import=bot_tg.handlers \
+		--hidden-import=openpyxl \
+		bot_tg/main.py
+
 docker-build:
 	docker build -t practice-bot .
 

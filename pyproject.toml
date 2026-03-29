@@ -18,4 +18,5 @@ include = ["bot_tg*", "bot_max*", "common*"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.4",
+    "pyinstaller>=6.0",
 ]

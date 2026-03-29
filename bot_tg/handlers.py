@@ -176,27 +176,73 @@ async def _check_admin(update: Update) -> bool:
     return False
 
 
-_MAIN_KEYBOARD = ReplyKeyboardMarkup(
-    [
-        ["📊 Статус", "🔄 Синхронизация"],
-        ["💬 Комментарий", "📤 Синхронизация учебных групп"],
-    ],
-    resize_keyboard=True,
-)
-
+BTN_HELP = "❓ Помощь"
 BTN_STATUS = "📊 Статус"
 BTN_SYNC = "🔄 Синхронизация"
 BTN_COMMENT = "💬 Комментарий"
 BTN_UPLOAD_XLSX = "📤 Синхронизация учебных групп"
 
+_ADMIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [BTN_STATUS, BTN_SYNC],
+        [BTN_COMMENT, BTN_UPLOAD_XLSX],
+        [BTN_HELP],
+    ],
+    resize_keyboard=True,
+)
+
+_PUBLIC_KEYBOARD = ReplyKeyboardMarkup(
+    [[BTN_HELP]],
+    resize_keyboard=True,
+)
+
+
+_HELP_TEXT = r"""
+📋 Бот для сбора документов для прохождения практики.
+
+📎 Как отправить документы:
+
+Для одного студента — отправьте .zip архив с именем:
+  {Группа}_{Фамилия}_{Имя}_{Отчество}.zip
+  Пример: 3130801-30201_Иванов_Иван_Иванович.zip
+
+Для всей группы — отправьте .zip архив с именем:
+  {Группа}.zip
+  Пример: 3130801-30201.zip
+
+📁 Структура архива группы:
+  Каждый студент — отдельная папка:
+    Иванов\_Иван\_Иванович/
+    Петрова\_Мария\_Сергеевна/
+
+📄 Необходимые документы (в папке каждого студента):
+
+❗ Документы должны быть названы *строго* следующим образом:
+  • Гарантийное\_письмо.docx
+  • Заявление.docx
+  • Краткосрочный\_договор.docx
+  • Характеристика.docx
+
+⚠️ В имени файла "/" в номере группы заменяется на "-"
+  Группа 3130801/30201 → файл 3130801-30201.zip
+
+ℹ️ Отчество можно опустить: Иванов\_Иван\_
+"""
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    log.info("User %s sent /help", _user_info(update))
+    await update.message.reply_text(_HELP_TEXT, parse_mode="Markdown")
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.info("User %s sent /start", _user_info(update))
-    if not await _check_admin(update):
-        return
+    user = update.effective_user
+    username = user.username if user else None
+    keyboard = _ADMIN_KEYBOARD if is_admin(username) else _PUBLIC_KEYBOARD
     await update.message.reply_text(
         "Привет! Я бот для сбора документов для прохождения практики :)",
-        reply_markup=_MAIN_KEYBOARD,
+        reply_markup=keyboard,
     )
 
 
@@ -402,6 +448,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text
     log.info("User %s sent message: %s", _user_info(update), text)
+
+    if text == BTN_HELP:
+        await update.message.reply_text(_HELP_TEXT, parse_mode="Markdown")
+        return
+
     if not await _check_admin(update):
         return
 
