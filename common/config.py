@@ -17,7 +17,7 @@ def get_max_token() -> str:
 
 
 def get_group_number_regex() -> str:
-    return os.environ.get("GROUP_NUMBER_REGEX", r"\d{4}")
+    return os.environ.get("GROUP_NUMBER_REGEX", r"\d{7}-\d{5}")
 
 
 def get_webdav_options() -> dict:
@@ -30,3 +30,5 @@ def get_webdav_options() -> dict:
 
 def get_webdav_upload_dir() -> str:
     return os.environ.get("YANDEX_WEBDAV_UPLOAD_DIR", "/Практики/")
+
+

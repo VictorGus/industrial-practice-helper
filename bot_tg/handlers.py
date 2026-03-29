@@ -3,12 +3,17 @@ import io
 import re
 import zipfile
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from common.config import get_group_number_regex
+from common.config import get_group_number_regex, get_webdav_upload_dir
 from common.logger import log
-from common.storage import upload_zip, upload_single_member_zip
+from common.storage import (
+    upload_zip, upload_single_member_zip, upload_bytes,
+    list_group_xlsx_files, download_xlsx, sync_group_xlsx,
+    list_student_folders, list_students, set_student_comment,
+    is_admin, REQUIRED_DOCUMENTS,
+)
 
 # Russian name: capital letter followed by lowercase Cyrillic
 _RU_NAME = r"[А-ЯЁ][а-яё]+"
@@ -55,25 +60,25 @@ def _validate_group_zip(filename: str, group_number: str, buf: io.BytesIO) -> tu
         with zipfile.ZipFile(buf) as zf:
             folders, is_wrapped = _get_student_folders(zf, group_number)
             if not folders:
-                errors.append("The archive contains no student folders.")
+                errors.append("Архив не содержит папок студентов.")
                 return False, False, errors
 
             invalid_folders = [f for f in folders if not _FOLDER_RE.match(f)]
             if invalid_folders:
-                errors.append("The following folders have incorrect names:")
+                errors.append("Следующие папки имеют некорректные имена:")
                 for f in invalid_folders:
                     errors.append(f"  • {f}")
                 errors.append("")
                 errors.append(
-                    "Folder names must match the format:\n"
+                    "Имя папки должно соответствовать формату:\n"
                     "  {Фамилия}_{Имя}_{Отчество}\n"
-                    "Example: Иванов_Иван_Иванович\n"
-                    "Middle name (Отчество) can be omitted:\n"
+                    "Пример: Иванов_Иван_Иванович\n"
+                    "Отчество можно опустить:\n"
                     "  Иванов_Иван_"
                 )
                 return False, is_wrapped, errors
     except zipfile.BadZipFile:
-        errors.append("The file doesn't appear to be a valid ZIP archive.")
+        errors.append("Файл не является корректным ZIP-архивом.")
         return False, False, errors
 
     return True, is_wrapped, []
@@ -97,6 +102,58 @@ def _member_folder_name(filename: str) -> str:
     return rest
 
 
+import time
+
+
+def _make_sync_progress_callback(message, loop):
+    """Progress callback for sync: shows student name being processed."""
+    last_edit = [0.0]
+
+    def on_progress(done, total, student_name):
+        now = time.monotonic()
+        if done < total and now - last_edit[0] < 3.0:
+            return
+        last_edit[0] = now
+        bar_len = 10
+        filled = int(bar_len * done / total) if total else bar_len
+        bar = "▓" * filled + "░" * (bar_len - filled)
+        text = f"🔄 Синхронизация: {bar} {done}/{total}\n{student_name}"
+        asyncio.run_coroutine_threadsafe(
+            message.edit_text(text), loop
+        )
+
+    return on_progress
+
+
+def _make_progress_callback(message, loop):
+    """Create a throttled progress callback that edits a Telegram message.
+
+    Called from a worker thread; schedules edits on the event loop.
+    """
+    last_edit = [0.0]
+
+    def on_progress(done, total):
+        now = time.monotonic()
+        # Throttle: update at most every 3 seconds, or on completion
+        if done < total and now - last_edit[0] < 3.0:
+            return
+        last_edit[0] = now
+        bar_len = 10
+        filled = int(bar_len * done / total) if total else bar_len
+        bar = "▓" * filled + "░" * (bar_len - filled)
+        text = f"⏳ Загрузка: {bar} {done}/{total}"
+        asyncio.run_coroutine_threadsafe(
+            message.edit_text(text), loop
+        )
+
+    return on_progress
+
+
+def _display_group(group: str) -> str:
+    """Convert group name for display: 3130801-30201 -> 3130801/30201."""
+    return group.replace("-", "/")
+
+
 def _user_info(update: Update) -> str:
     user = update.effective_user
     if user:
@@ -104,17 +161,301 @@ def _user_info(update: Update) -> str:
     return "unknown"
 
 
+_DENY_MSG = "⛔ У вас нет доступа. Обратитесь к администратору."
+
+
+async def _check_admin(update: Update) -> bool:
+    user = update.effective_user
+    username = user.username if user else None
+    if is_admin(username):
+        return True
+    log.warning("Access denied for %s", _user_info(update))
+    target = update.message or (update.callback_query and update.callback_query.message)
+    if target:
+        await target.reply_text(_DENY_MSG)
+    return False
+
+
+_MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["📊 Статус", "🔄 Синхронизация"],
+        ["💬 Комментарий", "📤 Синхронизация учебных групп"],
+    ],
+    resize_keyboard=True,
+)
+
+BTN_STATUS = "📊 Статус"
+BTN_SYNC = "🔄 Синхронизация"
+BTN_COMMENT = "💬 Комментарий"
+BTN_UPLOAD_XLSX = "📤 Синхронизация учебных групп"
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.info("User %s sent /start", _user_info(update))
-    await update.message.reply_text("Hello! I'm your Telegram bot.")
+    if not await _check_admin(update):
+        return
+    await update.message.reply_text(
+        "Привет! Я бот для сбора документов для прохождения практики :)",
+        reply_markup=_MAIN_KEYBOARD,
+    )
 
 
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    log.info("User %s sent message: %s", _user_info(update), update.message.text)
-    await update.message.reply_text(update.message.text)
+def _parse_xlsx(buf: io.BytesIO) -> list[dict]:
+    from openpyxl import load_workbook
+
+    wb = load_workbook(buf, read_only=True, data_only=True)
+    ws = wb.active
+
+    # Map column headers to indices
+    headers = [str(c.value or "").strip() for c in next(ws.iter_rows(min_row=1, max_row=1))]
+    doc_columns = {}
+    for col_header in REQUIRED_DOCUMENTS:
+        if col_header in headers:
+            doc_columns[col_header] = headers.index(col_header)
+    comment_idx = headers.index("Комментарий") if "Комментарий" in headers else None
+
+    students = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if row[0] is None:
+            continue
+        missing = []
+        for col_header, idx in doc_columns.items():
+            val = str(row[idx] or "").strip().lower()
+            if val not in ("да", "yes", "1", "true", "не нужно", "не надо"):
+                missing.append(col_header)
+        comment = ""
+        if comment_idx is not None and row[comment_idx]:
+            comment = str(row[comment_idx]).strip()
+        students.append({
+            "surname": row[1] or "",
+            "name": row[2] or "",
+            "patronymic": row[3] or "",
+            "missing": missing,
+            "comment": comment,
+        })
+    wb.close()
+    return students
+
+
+async def _status_for_group(group: str) -> str:
+    buf = await asyncio.to_thread(download_xlsx, group)
+    students = _parse_xlsx(buf)
+    incomplete = [s for s in students if s["missing"]]
+    total = len(students)
+
+    dg = _display_group(group)
+    lines = [f"📁 Группа {dg} — сдали всё: {total - len(incomplete)}/{total}", ""]
+    for s in students:
+        full_name = " ".join(filter(None, [s["surname"], s["name"], s["patronymic"]]))
+        if not s["missing"]:
+            lines.append(f"✅ {full_name}")
+        else:
+            docs = ", ".join(s["missing"])
+            lines.append(f"❌ {full_name}")
+            lines.append(f"     нет: {docs}")
+        if s["comment"]:
+            lines.append(f"     💬 {s['comment']}")
+    return "\n".join(lines)
+
+
+async def _group_picker(update: Update, action: str, label: str) -> None:
+    """Show inline buttons to pick a group, plus an 'All' option for status."""
+    try:
+        groups = await asyncio.to_thread(list_group_xlsx_files)
+    except Exception as e:
+        log.error("Failed to list groups: %s", e)
+        await update.message.reply_text(f"Не удалось получить список групп: {e}")
+        return
+
+    if not groups:
+        await update.message.reply_text("Файлы групп (.xlsx) не найдены.")
+        return
+
+    buttons = [[InlineKeyboardButton(_display_group(g), callback_data=f"{action}:{g}")] for g in groups]
+    if action == "status":
+        buttons.append([InlineKeyboardButton("Все группы", callback_data="status:__all__")])
+
+    await update.message.reply_text(
+        f"{label} — выберите группу:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    log.info("User %s sent /status", _user_info(update))
+    if not await _check_admin(update):
+        return
+    if context.args:
+        group = context.args[0]
+        try:
+            text = await _status_for_group(group)
+        except Exception as e:
+            log.error("Failed to read %s.xlsx: %s", group, e)
+            text = f"Не удалось прочитать {_display_group(group)}.xlsx: {e}"
+        await update.message.reply_text(text)
+        return
+    await _group_picker(update, "status", "📊 Статус")
+
+
+async def sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    log.info("User %s sent /sync", _user_info(update))
+    if not await _check_admin(update):
+        return
+    if context.args:
+        group = context.args[0]
+        await _run_sync(update.message, group)
+        return
+    await _group_picker(update, "sync", "🔄 Синхронизация")
+
+
+async def _run_sync(message, group: str) -> None:
+    """Run sync with progress bar, used by both command and callback."""
+    dg = _display_group(group)
+    progress_msg = await message.reply_text(f"🔄 Синхронизация {dg}: ░░░░░░░░░░ 0/?")
+    loop = asyncio.get_running_loop()
+    on_progress = _make_sync_progress_callback(progress_msg, loop)
+    try:
+        updated = await asyncio.to_thread(sync_group_xlsx, group, on_progress)
+    except Exception as e:
+        log.error("Failed to sync %s: %s", group, e)
+        await progress_msg.edit_text(f"❌ Не удалось синхронизировать {dg}: {e}")
+        return
+    if updated:
+        await progress_msg.edit_text(f"✅ Синхронизация {dg}: обновлено {updated} ячеек.")
+    else:
+        await progress_msg.edit_text(f"✅ Синхронизация {dg}: xlsx уже актуален.")
+
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    if not await _check_admin(update):
+        return
+    data = query.data
+    log.info("Callback from %s: %s", _user_info(update), data)
+
+    if data.startswith("status:"):
+        group = data.split(":", 1)[1]
+        if group == "__all__":
+            try:
+                groups = await asyncio.to_thread(list_group_xlsx_files)
+            except Exception as e:
+                await query.message.reply_text(f"Ошибка: {e}")
+                return
+            for g in groups:
+                try:
+                    text = await _status_for_group(g)
+                except Exception as e:
+                    text = f"📁 Группа {_display_group(g)}: ошибка чтения файла"
+                await query.message.reply_text(text)
+        else:
+            try:
+                text = await _status_for_group(group)
+            except Exception as e:
+                text = f"Не удалось прочитать {_display_group(group)}.xlsx: {e}"
+            await query.message.reply_text(text)
+
+    elif data.startswith("sync:"):
+        group = data.split(":", 1)[1]
+        await _run_sync(query.message, group)
+
+    elif data.startswith("comment_group:"):
+        group = data.split(":", 1)[1]
+        try:
+            students = await asyncio.to_thread(list_students, group)
+        except Exception as e:
+            await query.message.reply_text(f"Ошибка: {e}")
+            return
+        if not students:
+            await query.message.reply_text("Список студентов пуст.")
+            return
+        # Store student list in user_data, use index in callback
+        context.user_data["comment_students"] = {"group": group, "list": students}
+        buttons = []
+        for i, s in enumerate(students):
+            full_name = " ".join(filter(None, [s["surname"], s["name"], s["patronymic"]]))
+            buttons.append([InlineKeyboardButton(full_name, callback_data=f"cs:{i}")])
+        await query.message.reply_text(
+            f"Группа {_display_group(group)} — выберите студента:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    elif data.startswith("cs:"):
+        idx = int(data.split(":", 1)[1])
+        stored = context.user_data.get("comment_students")
+        if not stored or idx >= len(stored["list"]):
+            await query.message.reply_text("Ошибка. Попробуйте заново.")
+            return
+        group = stored["group"]
+        s = stored["list"][idx]
+        full_name = " ".join(filter(None, [s["surname"], s["name"], s["patronymic"]]))
+        context.user_data["comment_for"] = {
+            "group": group,
+            "surname": s["surname"],
+            "name": s["name"],
+            "patronymic": s["patronymic"],
+        }
+        del context.user_data["comment_students"]
+        await query.message.reply_text(f"Введите комментарий для {full_name} (группа {_display_group(group)}):")
+
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text
+    log.info("User %s sent message: %s", _user_info(update), text)
+    if not await _check_admin(update):
+        return
+
+    # Check if user is entering a comment
+    comment_for = context.user_data.get("comment_for")
+    if comment_for and text not in (BTN_STATUS, BTN_SYNC, BTN_COMMENT):
+        del context.user_data["comment_for"]
+        group = comment_for["group"]
+        surname = comment_for["surname"]
+        name = comment_for["name"]
+        patronymic = comment_for["patronymic"]
+        full_name = " ".join(filter(None, [surname, name, patronymic]))
+        try:
+            ok = await asyncio.to_thread(
+                set_student_comment, group, surname, name, patronymic, text,
+            )
+        except Exception as e:
+            await update.message.reply_text(f"Ошибка: {e}")
+            return
+        if ok:
+            await update.message.reply_text(f"💬 Комментарий для {full_name} сохранён.")
+        else:
+            await update.message.reply_text(
+                f"Не удалось сохранить комментарий. Проверьте, что {_display_group(group)}.xlsx "
+                "содержит колонку «Комментарий» и студент существует."
+            )
+        return
+
+    # Any button press cancels awaiting states
+    context.user_data.pop("awaiting_xlsx", None)
+
+    if text == BTN_STATUS:
+        context.args = []
+        await status(update, context)
+    elif text == BTN_SYNC:
+        context.args = []
+        await sync(update, context)
+    elif text == BTN_COMMENT:
+        context.user_data.pop("comment_for", None)
+        await _group_picker(update, "comment_group", "💬 Комментарий")
+    elif text == BTN_UPLOAD_XLSX:
+        context.user_data["awaiting_xlsx"] = True
+        await update.message.reply_text(
+            "Отправьте один или несколько .xlsx файлов групп.\n"
+            "Файлы будут загружены в /Практики/ на Яндекс Диск.\n"
+            "Для завершения нажмите любую другую кнопку."
+        )
+    else:
+        await update.message.reply_text(text)
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _check_admin(update):
+        return
     doc = update.message.document
     if not doc:
         return
@@ -122,9 +463,29 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user = _user_info(update)
     filename = doc.file_name or ""
 
+    # Handle xlsx upload (flag stays active until user presses another button)
+    if context.user_data.get("awaiting_xlsx"):
+        if not filename.lower().endswith(".xlsx"):
+            await update.message.reply_text("Пожалуйста, отправьте файл в формате .xlsx.")
+            return
+        log.info("User %s uploading xlsx: %s", user, filename)
+        file = await doc.get_file()
+        buf = io.BytesIO()
+        await file.download_to_memory(buf)
+        try:
+            upload_dir = get_webdav_upload_dir()
+            remote_path = f"{upload_dir}{filename}"
+            await asyncio.to_thread(upload_bytes, buf, remote_path)
+            log.info("Uploaded %s to %s", filename, remote_path)
+            await update.message.reply_text(f"✅ {filename} загружен на Яндекс Диск.")
+        except Exception as e:
+            log.error("Failed to upload %s: %s", filename, e)
+            await update.message.reply_text(f"❌ {filename}: ошибка загрузки — {e}")
+        return
+
     if not filename.lower().endswith(".zip"):
         log.warning("User %s sent non-zip file: %s", user, filename)
-        await update.message.reply_text("Please send a .zip file.")
+        await update.message.reply_text("Пожалуйста, отправьте файл в формате .zip.")
         return
 
     log.info("User %s uploaded file: %s (%d bytes)", user, filename, doc.file_size)
@@ -152,12 +513,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if file_type == "invalid":
         log.warning("Validation failed for %s from %s: filename doesn't match any pattern", filename, user)
         await update.message.reply_text(
-            "Validation failed:\n\n"
-            f"Archive name \"{filename}\" doesn't match any expected format:\n"
-            "  • {Группа}.zip (e.g. 5308.zip) — for a whole group\n"
+            "Ошибка валидации:\n\n"
+            f"Имя архива «{filename}» не соответствует ожидаемому формату:\n"
+            "  • {Группа}.zip (напр. 5308.zip) — для всей группы\n"
             "  • {Группа}_{Фамилия}_{Имя}_{Отчество}.zip "
-            "(e.g. 5308_Иванов_Иван_Иванович.zip) — for a single student\n\n"
-            "Please rename and upload again."
+            "(напр. 5308_Иванов_Иван_Иванович.zip) — для одного студента\n\n"
+            "Переименуйте файл и загрузите заново."
         )
         return
 
@@ -165,43 +526,71 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         valid, is_wrapped, errors = _validate_group_zip(filename, group_number, buf)
         if not valid:
             log.warning("Validation failed for %s from %s: %s", filename, user, "; ".join(errors))
-            lines = ["Validation failed:", ""]
+            lines = ["Ошибка валидации:", ""]
             lines.extend(errors)
             lines.append("")
-            lines.append("Please fix the issues and upload the archive again.")
+            lines.append("Исправьте ошибки и загрузите архив заново.")
             await update.message.reply_text("\n".join(lines))
             return
 
         try:
-            remote_paths = await asyncio.to_thread(upload_zip, buf, filename, is_wrapped)
+            progress_msg = await update.message.reply_text("⏳ Загрузка: ░░░░░░░░░░ 0/?")
+            loop = asyncio.get_running_loop()
+            on_progress = _make_progress_callback(progress_msg, loop)
+
+            remote_paths = await asyncio.to_thread(
+                upload_zip, buf, filename, is_wrapped, on_progress,
+            )
             log.info("Group archive %s from %s uploaded (%d files)", filename, user, len(remote_paths))
             for rp in remote_paths:
                 log.info("  -> %s", rp)
+
+            # Sync xlsx with actual files on disk
+            try:
+                synced = await asyncio.to_thread(sync_group_xlsx, group_number)
+                if synced:
+                    log.info("Synced %d cell(s) in %s.xlsx", synced, group_number)
+            except Exception as e:
+                log.warning("Failed to sync %s.xlsx: %s", group_number, e)
+
             lines = [
-                f"Group archive {filename} accepted!",
-                f"Uploaded {len(remote_paths)} file(s) to Yandex Disk.",
+                f"✅ Архив группы {filename} принят!",
+                f"Загружено {len(remote_paths)} файл(ов) на Яндекс Диск.",
             ]
-            await update.message.reply_text("\n".join(lines))
+            await progress_msg.edit_text("\n".join(lines))
         except Exception as e:
             log.error("Upload failed for %s from %s: %s", filename, user, e)
-            await update.message.reply_text(f"Upload to Yandex Disk failed: {e}")
+            await update.message.reply_text(f"Ошибка загрузки на Яндекс Диск: {e}")
 
     elif file_type == "member":
         folder_name = _member_folder_name(filename)
         try:
+            progress_msg = await update.message.reply_text("⏳ Загрузка: ░░░░░░░░░░ 0/?")
+            loop = asyncio.get_running_loop()
+            on_progress = _make_progress_callback(progress_msg, loop)
+
             remote_paths = await asyncio.to_thread(
-                upload_single_member_zip, buf, group_number, folder_name
+                upload_single_member_zip, buf, group_number, folder_name, on_progress,
             )
             log.info("Student archive %s from %s uploaded to group %s as %s/ (%d files)",
                      filename, user, group_number, folder_name, len(remote_paths))
             for rp in remote_paths:
                 log.info("  -> %s", rp)
+
+            # Sync xlsx with actual files on disk
+            try:
+                synced = await asyncio.to_thread(sync_group_xlsx, group_number)
+                if synced:
+                    log.info("Synced %d cell(s) in %s.xlsx", synced, group_number)
+            except Exception as e:
+                log.warning("Failed to sync %s.xlsx: %s", group_number, e)
+
             lines = [
-                f"Student archive {filename} accepted!",
-                f"Uploaded to group {group_number} as {folder_name}/",
-                f"{len(remote_paths)} file(s) uploaded to Yandex Disk.",
+                f"✅ Архив студента {filename} принят!",
+                f"Загружено в группу {_display_group(group_number)} как {folder_name}/",
+                f"{len(remote_paths)} файл(ов) загружено на Яндекс Диск.",
             ]
-            await update.message.reply_text("\n".join(lines))
+            await progress_msg.edit_text("\n".join(lines))
         except Exception as e:
             log.error("Upload failed for %s from %s: %s", filename, user, e)
-            await update.message.reply_text(f"Upload to Yandex Disk failed: {e}")
+            await update.message.reply_text(f"Ошибка загрузки на Яндекс Диск: {e}")

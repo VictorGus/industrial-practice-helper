@@ -21,5 +21,11 @@ lint:
 test:
 	$(VENV)/bin/pytest -v
 
+docker-build:
+	docker build -t practice-bot .
+
+docker-run:
+	docker run --rm --env-file .env practice-bot
+
 clean:
 	rm -rf $(VENV) *.egg-info __pycache__ .pytest_cache .ruff_cache

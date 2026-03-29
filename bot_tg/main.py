@@ -1,11 +1,13 @@
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+from dotenv import load_dotenv
+from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from common.config import get_telegram_token
 from common.logger import log
-from bot_tg.handlers import start, echo, handle_document
+from bot_tg.handlers import start, status, sync, handle_text, handle_callback, handle_document
 
 
 def run() -> None:
+    load_dotenv()
     app = (
         ApplicationBuilder()
         .token(get_telegram_token())
@@ -13,8 +15,11 @@ def run() -> None:
     )
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("sync", sync))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     log.info("Telegram bot started")
     app.run_polling()
