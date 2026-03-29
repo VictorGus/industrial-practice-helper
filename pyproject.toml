@@ -1,0 +1,20 @@
+[project]
+name = "practice-bot"
+version = "0.1.0"
+description = "Telegram and Max messenger bot"
+requires-python = ">=3.11"
+dependencies = [
+    "python-telegram-bot>=21.0",
+    "aiomax>=2.12",
+    "python-dotenv>=1.0.0",
+    "webdavclient3>=3.14",
+]
+
+[tool.setuptools.packages.find]
+include = ["bot_tg*", "bot_max*", "common*"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
