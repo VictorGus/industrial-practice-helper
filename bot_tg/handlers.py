@@ -241,9 +241,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     username = user.username if user else None
     keyboard = _ADMIN_KEYBOARD if is_admin(username) else _PUBLIC_KEYBOARD
     await update.message.reply_text(
-        "Привет! Я бот для сбора документов для прохождения практики :)",
+        "Привет! Я бот для сбора документов для прохождения практики",
         reply_markup=keyboard,
     )
+    await update.message.reply_text(_HELP_TEXT, parse_mode="Markdown")
 
 
 def _parse_xlsx(buf: io.BytesIO) -> list[dict]:
