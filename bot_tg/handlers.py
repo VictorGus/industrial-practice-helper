@@ -564,12 +564,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if file_type == "invalid":
         log.warning("Validation failed for %s from %s: filename doesn't match any pattern", filename, user)
+        example_group = "3130801-30201"
         await update.message.reply_text(
             "Ошибка валидации:\n\n"
             f"Имя архива «{filename}» не соответствует ожидаемому формату:\n"
-            "  • {Группа}.zip (напр. 5308.zip) — для всей группы\n"
-            "  • {Группа}_{Фамилия}_{Имя}_{Отчество}.zip "
-            "(напр. 5308_Иванов_Иван_Иванович.zip) — для одного студента\n\n"
+            f"  • {{Группа}}.zip (напр. {example_group}.zip) — для всей группы\n"
+            f"  • {{Группа}}_{{Фамилия}}_{{Имя}}_{{Отчество}}.zip "
+            f"(напр. {example_group}_Иванов_Иван_Иванович.zip) — для одного студента\n\n"
             "Переименуйте файл и загрузите заново."
         )
         return
