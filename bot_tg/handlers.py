@@ -12,7 +12,7 @@ from common.storage import (
     upload_zip, upload_single_member_zip, upload_bytes,
     list_group_xlsx_files, download_xlsx, sync_group_xlsx,
     list_student_folders, list_students, set_student_comment,
-    is_admin, REQUIRED_DOCUMENTS,
+    is_admin, REQUIRED_DOCUMENTS, _fix_zip_filename,
 )
 
 # Russian name: capital letter followed by lowercase Cyrillic
@@ -33,7 +33,7 @@ def _build_member_zip_regex() -> re.Pattern:
 def _get_top_level_folders(zf: zipfile.ZipFile) -> list[str]:
     folders = set()
     for entry in zf.infolist():
-        parts = entry.filename.split("/")
+        parts = _fix_zip_filename(entry).split("/")
         if len(parts) > 1 and parts[0]:
             folders.add(parts[0])
     return sorted(folders)
@@ -45,7 +45,7 @@ def _get_student_folders(zf: zipfile.ZipFile, group_number: str) -> tuple[list[s
     if len(top_folders) == 1 and top_folders[0] == group_number:
         folders = set()
         for entry in zf.infolist():
-            parts = entry.filename.split("/")
+            parts = _fix_zip_filename(entry).split("/")
             if len(parts) > 2 and parts[0] == group_number and parts[1]:
                 folders.add(parts[1])
         return sorted(folders), True
@@ -217,11 +217,12 @@ _HELP_TEXT = r"""
 
 📄 Необходимые документы (в папке каждого студента):
 
-❗ Документы должны быть названы *строго* следующим образом:
-  • Гарантийное\_письмо.docx
-  • Заявление.docx
-  • Краткосрочный\_договор.docx
-  • Характеристика.docx
+❗ Имя файла должно *содержать* название документа:
+  • Гарантийное письмо
+  • Заявление
+  • Краткосрочный договор
+  • Характеристика
+Формат файла — любой (docx, pdf, doc и т.д.)
 
 ⚠️ В имени файла "/" в номере группы заменяется на "-"
   Группа 3130801/30201 → файл 3130801-30201.zip
@@ -555,7 +556,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             total_size = sum(e.file_size for e in entries)
             log.info("ZIP %s: %d items, %d bytes uncompressed", filename, len(entries), total_size)
             for e in entries:
-                log.info("  %s (%d bytes)", e.filename, e.file_size)
+                log.info("  %s (%d bytes)", _fix_zip_filename(e), e.file_size)
     except zipfile.BadZipFile:
         log.error("Invalid ZIP file: %s", filename)
 

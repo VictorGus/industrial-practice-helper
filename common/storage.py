@@ -8,6 +8,21 @@ from common.config import get_webdav_options, get_webdav_upload_dir
 from common.logger import log
 
 
+def _fix_zip_filename(entry: zipfile.ZipInfo) -> str:
+    """Fix Cyrillic filenames in ZIP archives created on Russian Windows.
+
+    Python's zipfile decodes non-UTF-8 entries as CP437, but Russian Windows
+    tools typically encode filenames in CP866.  Re-encode from CP437 back to
+    bytes and decode as CP866 when the UTF-8 flag is not set.
+    """
+    if entry.flag_bits & 0x800:  # UTF-8 flag is set — already correct
+        return entry.filename
+    try:
+        return entry.filename.encode("cp437").decode("cp866")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return entry.filename
+
+
 SUPER_ADMINS = {"victorgus", "anizhomlev", "polly1821"}
 
 
@@ -74,7 +89,7 @@ def _count_zip_files(buf: io.BytesIO, strip_prefix: str = "") -> int:
         for entry in zf.infolist():
             if entry.is_dir():
                 continue
-            path = entry.filename
+            path = _fix_zip_filename(entry)
             if strip_prefix and not path.startswith(strip_prefix):
                 continue
             rel = path[len(strip_prefix):]
@@ -123,7 +138,7 @@ def upload_zip(buf: io.BytesIO, filename: str, is_wrapped: bool = False,
     buf.seek(0)
     with zipfile.ZipFile(buf) as zf:
         for entry in zf.infolist():
-            path = entry.filename
+            path = _fix_zip_filename(entry)
             if strip_prefix and not path.startswith(strip_prefix):
                 continue
             rel_path = path[len(strip_prefix):]
@@ -172,15 +187,16 @@ def upload_single_member_zip(buf: io.BytesIO, group_number: str, folder_name: st
     buf.seek(0)
     with zipfile.ZipFile(buf) as zf:
         for entry in zf.infolist():
+            fixed_name = _fix_zip_filename(entry)
             if entry.is_dir():
-                entry_dir = f"{member_dir}{entry.filename}"
+                entry_dir = f"{member_dir}{fixed_name}"
                 ensure_remote_dir(entry_dir)
             else:
-                if "/" in entry.filename:
-                    parent = entry.filename.rsplit("/", 1)[0] + "/"
+                if "/" in fixed_name:
+                    parent = fixed_name.rsplit("/", 1)[0] + "/"
                     ensure_remote_dir(f"{member_dir}{parent}")
                 data = io.BytesIO(zf.read(entry.filename))
-                entry_remote = f"{member_dir}{entry.filename}"
+                entry_remote = f"{member_dir}{fixed_name}"
                 upload_bytes(data, entry_remote)
                 uploaded.append(entry_remote)
                 if on_progress:
@@ -189,12 +205,12 @@ def upload_single_member_zip(buf: io.BytesIO, group_number: str, folder_name: st
     return uploaded
 
 
-# Column header -> expected filename in student folder
+# Column header -> keyword to search for in student's filenames
 REQUIRED_DOCUMENTS = {
-    "Гарантийное письмо": "Гарантийное_письмо.docx",
-    "Заявление": "Заявление.docx",
-    "Краткосрочный договор": "Краткосрочный_договор.docx",
-    "Характеристика": "Характеристика.docx",
+    "Гарантийное письмо": "гарантийное письмо",
+    "Заявление": "заявление",
+    "Краткосрочный договор": "краткосрочный договор",
+    "Характеристика": "характеристика",
 }
 
 
@@ -323,7 +339,7 @@ def sync_group_xlsx(group: str, on_progress=None) -> int:
         log.info("Sync [%d/%d] %s — файлов на диске: %d", i + 1, total, full_name, len(files))
 
         row_changes = 0
-        for col_header, expected_file in REQUIRED_DOCUMENTS.items():
+        for col_header, keyword in REQUIRED_DOCUMENTS.items():
             col_idx = header_map.get(col_header)
             if col_idx is None:
                 continue
@@ -333,7 +349,7 @@ def sync_group_xlsx(group: str, on_progress=None) -> int:
             if cell_val in ("не нужно", "не надо"):
                 log.info("  %s: %s (пропуск)", col_header, cell.value)
                 continue
-            has_file = expected_file in files
+            has_file = any(keyword in f.replace("_", " ").lower() for f in files)
             current = cell_val in ("да", "yes", "1", "true")
 
             if has_file and not current:
