@@ -1,7 +1,8 @@
 VENV := .venv
 PYTHON := $(VENV)/bin/python
 
-.PHONY: venv install run-tg run-max lint test clean
+.PHONY: venv install run-tg run-max lint test clean \
+       service-install service-uninstall service-start service-stop service-restart service-status service-logs
 
 venv:
 	python3 -m venv $(VENV)
@@ -40,3 +41,53 @@ docker-run:
 
 clean:
 	rm -rf $(VENV) *.egg-info __pycache__ .pytest_cache .ruff_cache
+
+# --- systemd service ---
+SERVICE_NAME := practice-bot
+SERVICE_FILE := /etc/systemd/system/$(SERVICE_NAME).service
+PROJECT_DIR := $(shell pwd)
+
+define SERVICE_UNIT
+[Unit]
+Description=Practice Bot (Telegram)
+After=network.target
+
+[Service]
+Type=simple
+User=$(USER)
+WorkingDirectory=$(PROJECT_DIR)
+EnvironmentFile=$(PROJECT_DIR)/.env
+ExecStart=$(PROJECT_DIR)/$(PYTHON) -m bot_tg.main
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+endef
+export SERVICE_UNIT
+
+service-install: install
+	echo "$$SERVICE_UNIT" | sudo tee $(SERVICE_FILE) > /dev/null
+	sudo systemctl daemon-reload
+	sudo systemctl enable $(SERVICE_NAME)
+
+service-uninstall:
+	sudo systemctl disable $(SERVICE_NAME) || true
+	sudo systemctl stop $(SERVICE_NAME) || true
+	sudo rm -f $(SERVICE_FILE)
+	sudo systemctl daemon-reload
+
+service-start:
+	sudo systemctl start $(SERVICE_NAME)
+
+service-stop:
+	sudo systemctl stop $(SERVICE_NAME)
+
+service-restart:
+	sudo systemctl restart $(SERVICE_NAME)
+
+service-status:
+	sudo systemctl status $(SERVICE_NAME)
+
+service-logs:
+	journalctl -u $(SERVICE_NAME) -f
