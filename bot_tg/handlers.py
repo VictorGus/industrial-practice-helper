@@ -506,8 +506,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _check_admin(update):
-        return
     doc = update.message.document
     if not doc:
         return
@@ -517,6 +515,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     # Handle xlsx upload (flag stays active until user presses another button)
     if context.user_data.get("awaiting_xlsx"):
+        if not await _check_admin(update):
+            return
         if not filename.lower().endswith(".xlsx"):
             await update.message.reply_text("Пожалуйста, отправьте файл в формате .xlsx.")
             return
