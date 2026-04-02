@@ -11,6 +11,7 @@ def run() -> None:
     app = (
         ApplicationBuilder()
         .token(get_telegram_token())
+        .concurrent_updates(True)
         .build()
     )
 
