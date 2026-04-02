@@ -1,5 +1,7 @@
 import io
+import os
 import re
+import tempfile
 import zipfile
 
 from webdav3.client import Client
@@ -83,7 +85,13 @@ def ensure_remote_dir(path: str) -> None:
 def upload_bytes(buf: io.BytesIO, remote_path: str) -> None:
     client = _get_client()
     buf.seek(0)
-    client.upload_to(buf, remote_path)
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        tmp.write(buf.read())
+        tmp_path = tmp.name
+    try:
+        client.upload_file(remote_path, tmp_path)
+    finally:
+        os.unlink(tmp_path)
 
 
 def _count_zip_files(buf: io.BytesIO, strip_prefix: str = "") -> int:

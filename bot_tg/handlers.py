@@ -566,25 +566,45 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if file_type == "invalid":
         log.warning("Validation failed for %s from %s: filename doesn't match any pattern", filename, user)
 
-        # Still save the raw .zip to Yandex Disk (no extraction)
-        try:
-            upload_dir = get_webdav_upload_dir()
-            remote_path = f"{upload_dir}{filename}"
-            await asyncio.to_thread(upload_bytes, buf, remote_path)
-            log.info("Saved raw zip %s to %s (validation failed)", filename, remote_path)
-        except Exception as e:
-            log.error("Failed to save raw zip %s: %s", filename, e)
-
         example_group = "3130801-30201"
-        await update.message.reply_text(
+        status_msg = await update.message.reply_text(
             "Ошибка валидации:\n\n"
             f"Имя архива «{filename}» не соответствует ожидаемому формату:\n"
             f"  • {{Группа}}.zip (напр. {example_group}.zip) — для всей группы\n"
             f"  • {{Группа}}_{{Фамилия}}_{{Имя}}_{{Отчество}}.zip "
             f"(напр. {example_group}_Иванов_Иван_Иванович.zip) — для одного студента\n\n"
-            "Файл сохранён на Яндекс Диск, но его содержимое может не быть учтено автоматически.\n"
+            "⏳ Сохраняем файл на Яндекс Диск…\n"
             "Рекомендуем переименовать файл и загрузить заново."
         )
+
+        # Save the raw .zip to Yandex Disk (no extraction)
+        try:
+            upload_dir = get_webdav_upload_dir()
+            remote_path = f"{upload_dir}{filename}"
+            await asyncio.to_thread(upload_bytes, buf, remote_path)
+            log.info("Saved raw zip %s to %s (validation failed)", filename, remote_path)
+            await status_msg.edit_text(
+                "Ошибка валидации:\n\n"
+                f"Имя архива «{filename}» не соответствует ожидаемому формату:\n"
+                f"  • {{Группа}}.zip (напр. {example_group}.zip) — для всей группы\n"
+                f"  • {{Группа}}_{{Фамилия}}_{{Имя}}_{{Отчество}}.zip "
+                f"(напр. {example_group}_Иванов_Иван_Иванович.zip) — для одного студента\n\n"
+                "✅ Файл сохранён на Яндекс Диск, но его содержимое не будет учтено автоматически.\n"
+                "Рекомендуем переименовать файл и загрузить заново."
+            )
+        except Exception as e:
+            log.error("Failed to save raw zip %s: %s", filename, e)
+            await status_msg.edit_text(
+                "Ошибка валидации:\n\n"
+                f"Имя архива «{filename}» не соответствует ожидаемому формату:\n"
+                f"  • {{Группа}}.zip (напр. {example_group}.zip) — для всей группы\n"
+                f"  • {{Группа}}_{{Фамилия}}_{{Имя}}_{{Отчество}}.zip "
+                f"(напр. {example_group}_Иванов_Иван_Иванович.zip) — для одного студента\n\n"
+                "❌ Не удалось сохранить файл на Яндекс Диск.\n"
+                "Рекомендуем переименовать файл и загрузить заново."
+            )
+
+
         return
 
     if file_type == "group":
