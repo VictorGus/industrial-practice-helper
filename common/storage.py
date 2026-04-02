@@ -7,6 +7,8 @@ from webdav3.client import Client
 from common.config import get_webdav_options, get_webdav_upload_dir
 from common.logger import log
 
+_client: Client | None = None
+
 
 def _fix_zip_filename(entry: zipfile.ZipInfo) -> str:
     """Fix Cyrillic filenames in ZIP archives created on Russian Windows.
@@ -27,7 +29,10 @@ SUPER_ADMINS = {"victorgus", "anizhomlev", "polly1821"}
 
 
 def _get_client() -> Client:
-    return Client(get_webdav_options())
+    global _client
+    if _client is None:
+        _client = Client(get_webdav_options())
+    return _client
 
 
 def get_admin_usernames() -> set[str]:

@@ -25,6 +25,7 @@ def get_webdav_options() -> dict:
         "webdav_hostname": "https://webdav.yandex.ru",
         "webdav_login": get_required_env("YANDEX_WEBDAV_LOGIN"),
         "webdav_password": get_required_env("YANDEX_WEBDAV_TOKEN"),
+        "timeout": 300,
     }
 
 
