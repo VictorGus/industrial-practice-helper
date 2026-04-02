@@ -112,7 +112,7 @@ def _count_zip_files(buf: io.BytesIO, strip_prefix: str = "") -> int:
 
 
 def upload_zip(buf: io.BytesIO, filename: str, is_wrapped: bool = False,
-               on_progress=None) -> list[str]:
+               on_progress=None, skip_zip_upload: bool = False) -> list[str]:
     """Upload .zip and extract contents into a group folder.
 
     Zip name is {GROUP}.zip. Contents are extracted into
@@ -121,6 +121,9 @@ def upload_zip(buf: io.BytesIO, filename: str, is_wrapped: bool = False,
 
     If is_wrapped is True, the archive has a top-level {GROUP}/ folder that
     should be stripped (its contents go directly into the group dir).
+
+    If skip_zip_upload is True, the .zip itself is not uploaded (useful when
+    the archive is already on the remote disk).
 
     on_progress(uploaded_count, total_count) is called after each file upload.
 
@@ -131,10 +134,11 @@ def upload_zip(buf: io.BytesIO, filename: str, is_wrapped: bool = False,
 
     uploaded = []
 
-    # Upload the .zip itself
-    zip_remote = f"{upload_dir}{filename}"
-    upload_bytes(buf, zip_remote)
-    uploaded.append(zip_remote)
+    if not skip_zip_upload:
+        # Upload the .zip itself
+        zip_remote = f"{upload_dir}{filename}"
+        upload_bytes(buf, zip_remote)
+        uploaded.append(zip_remote)
 
     # Group folder: {UPLOAD_DIR}/{GROUP}/
     group_name = filename[:-4]  # strip .zip
@@ -144,8 +148,8 @@ def upload_zip(buf: io.BytesIO, filename: str, is_wrapped: bool = False,
     # Prefix to strip from entry paths when wrapped
     strip_prefix = f"{group_name}/" if is_wrapped else ""
 
-    total = _count_zip_files(buf, strip_prefix) + 1  # +1 for the zip itself
-    if on_progress:
+    total = _count_zip_files(buf, strip_prefix) + (0 if skip_zip_upload else 1)
+    if on_progress and uploaded:
         on_progress(1, total)
 
     buf.seek(0)

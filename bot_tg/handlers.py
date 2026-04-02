@@ -464,6 +464,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             on_progress = _make_progress_callback(progress_msg, loop)
             remote_paths = await asyncio.to_thread(
                 upload_zip, buf, zip_filename, is_wrapped, on_progress,
+                True,  # skip_zip_upload — archive is already on disk
             )
             log.info("Unpacked %s into group dir (%d files)", zip_filename, len(remote_paths))
         except Exception as e:
