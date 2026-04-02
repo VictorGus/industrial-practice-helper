@@ -260,6 +260,33 @@ def list_student_files(group: str, folder_name: str) -> set[str]:
     return files
 
 
+def list_group_zip_files() -> list[str]:
+    """List .zip files matching the group-number pattern in the upload directory.
+
+    Returns filenames (with .zip extension).
+    """
+    from common.config import get_group_number_regex
+    client = _get_client()
+    upload_dir = get_webdav_upload_dir()
+    items = client.list(upload_dir)
+    pattern = re.compile(rf"^{get_group_number_regex()}\.zip$")
+    zips = []
+    for item in items:
+        name = item.strip("/")
+        if pattern.match(name):
+            zips.append(name)
+    return sorted(zips)
+
+
+def download_file(remote_path: str) -> io.BytesIO:
+    """Download a file from WebDAV into a BytesIO buffer."""
+    client = _get_client()
+    buf = io.BytesIO()
+    client.download_from(buf, remote_path)
+    buf.seek(0)
+    return buf
+
+
 def list_group_xlsx_files() -> list[str]:
     """List group xlsx files in the upload directory.
 

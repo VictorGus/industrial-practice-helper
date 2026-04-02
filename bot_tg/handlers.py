@@ -10,7 +10,8 @@ from common.config import get_group_number_regex, get_webdav_upload_dir
 from common.logger import log
 from common.storage import (
     upload_zip, upload_single_member_zip, upload_bytes,
-    list_group_xlsx_files, download_xlsx, sync_group_xlsx,
+    list_group_xlsx_files, list_group_zip_files, download_xlsx, download_file,
+    sync_group_xlsx,
     list_student_folders, list_students, set_student_comment,
     is_admin, REQUIRED_DOCUMENTS, _fix_zip_filename,
 )
@@ -181,12 +182,13 @@ BTN_STATUS = "📊 Статус"
 BTN_SYNC = "🔄 Синхронизация"
 BTN_COMMENT = "💬 Комментарий"
 BTN_UPLOAD_XLSX = "📤 Синхронизация учебных групп"
+BTN_UNPACK_ZIP = "📦 Распаковать архив"
 
 _ADMIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [BTN_STATUS, BTN_SYNC],
         [BTN_COMMENT, BTN_UPLOAD_XLSX],
-        [BTN_HELP],
+        [BTN_UNPACK_ZIP, BTN_HELP],
     ],
     resize_keyboard=True,
 )
@@ -428,6 +430,62 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             reply_markup=InlineKeyboardMarkup(buttons),
         )
 
+    elif data.startswith("unpack:"):
+        zip_filename = data.split(":", 1)[1]
+        group_number = zip_filename[:-4]  # strip .zip
+        dg = _display_group(group_number)
+
+        progress_msg = await query.message.reply_text(
+            f"📦 Скачиваем архив {zip_filename}…"
+        )
+
+        try:
+            upload_dir = get_webdav_upload_dir()
+            remote_zip = f"{upload_dir}{zip_filename}"
+            buf = await asyncio.to_thread(download_file, remote_zip)
+        except Exception as e:
+            log.error("Failed to download %s: %s", zip_filename, e)
+            await progress_msg.edit_text(
+                f"❌ Не удалось скачать архив {zip_filename}: {e}"
+            )
+            return
+
+        # Validate zip
+        valid, is_wrapped, errors = _validate_group_zip(zip_filename, group_number, buf)
+        if not valid:
+            lines = [f"❌ Архив {zip_filename} не прошёл валидацию:", ""]
+            lines.extend(errors)
+            await progress_msg.edit_text("\n".join(lines))
+            return
+
+        # Unpack and merge into group directory
+        try:
+            loop = asyncio.get_running_loop()
+            on_progress = _make_progress_callback(progress_msg, loop)
+            remote_paths = await asyncio.to_thread(
+                upload_zip, buf, zip_filename, is_wrapped, on_progress,
+            )
+            log.info("Unpacked %s into group dir (%d files)", zip_filename, len(remote_paths))
+        except Exception as e:
+            log.error("Failed to unpack %s: %s", zip_filename, e)
+            await progress_msg.edit_text(
+                f"❌ Ошибка распаковки {zip_filename}: {e}"
+            )
+            return
+
+        # Sync xlsx
+        try:
+            synced = await asyncio.to_thread(sync_group_xlsx, group_number)
+            if synced:
+                log.info("Synced %d cell(s) in %s.xlsx after unpack", synced, group_number)
+        except Exception as e:
+            log.warning("Failed to sync %s.xlsx: %s", group_number, e)
+
+        await progress_msg.edit_text(
+            f"✅ Архив {zip_filename} распакован!\n"
+            f"Группа {dg}: загружено {len(remote_paths)} файл(ов)."
+        )
+
     elif data.startswith("cs:"):
         idx = int(data.split(":", 1)[1])
         stored = context.user_data.get("comment_students")
@@ -460,7 +518,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     # Check if user is entering a comment
     comment_for = context.user_data.get("comment_for")
-    if comment_for and text not in (BTN_STATUS, BTN_SYNC, BTN_COMMENT):
+    if comment_for and text not in (BTN_STATUS, BTN_SYNC, BTN_COMMENT, BTN_UNPACK_ZIP):
         del context.user_data["comment_for"]
         group = comment_for["group"]
         surname = comment_for["surname"]
@@ -501,6 +559,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "Отправьте один или несколько .xlsx файлов групп.\n"
             "Файлы будут загружены в /Практики/ на Яндекс Диск.\n"
             "Для завершения нажмите любую другую кнопку."
+        )
+    elif text == BTN_UNPACK_ZIP:
+        try:
+            zips = await asyncio.to_thread(list_group_zip_files)
+        except Exception as e:
+            log.error("Failed to list group zips: %s", e)
+            await update.message.reply_text(f"Не удалось получить список архивов: {e}")
+            return
+        if not zips:
+            await update.message.reply_text("Групповые архивы (.zip) не найдены на Яндекс Диске.")
+            return
+        buttons = [
+            [InlineKeyboardButton(z, callback_data=f"unpack:{z}")]
+            for z in zips
+        ]
+        await update.message.reply_text(
+            "📦 Распаковка архива — выберите архив:",
+            reply_markup=InlineKeyboardMarkup(buttons),
         )
     else:
         await update.message.reply_text(text)
