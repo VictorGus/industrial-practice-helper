@@ -6,13 +6,16 @@ import zipfile
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from common.config import get_group_number_regex, get_webdav_upload_dir
+from common.config import (
+    get_group_number_regex, get_webdav_new_files_dir, get_webdav_upload_dir,
+)
 from common.logger import log
 from common.storage import (
     upload_zip, upload_single_member_zip, upload_bytes,
     list_group_xlsx_files, list_group_zip_files, download_xlsx, download_file,
     sync_group_xlsx,
     list_student_folders, list_students, set_student_comment,
+    ensure_remote_dir,
     is_admin, REQUIRED_DOCUMENTS, _fix_zip_filename,
 )
 
@@ -656,8 +659,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         # Save the raw .zip to Yandex Disk (no extraction)
         try:
-            upload_dir = get_webdav_upload_dir()
-            remote_path = f"{upload_dir}{filename}"
+            new_files_dir = get_webdav_new_files_dir()
+            await asyncio.to_thread(ensure_remote_dir, new_files_dir)
+            remote_path = f"{new_files_dir}{filename}"
             await asyncio.to_thread(upload_bytes, buf, remote_path)
             log.info("Saved raw zip %s to %s (validation failed)", filename, remote_path)
             await status_msg.edit_text(
@@ -702,6 +706,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
             remote_paths = await asyncio.to_thread(
                 upload_zip, buf, filename, is_wrapped, on_progress,
+                False,  # skip_zip_upload
+                get_webdav_new_files_dir(),  # base_dir
             )
             log.info("Group archive %s from %s uploaded (%d files)", filename, user, len(remote_paths))
             for rp in remote_paths:
@@ -733,6 +739,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
             remote_paths = await asyncio.to_thread(
                 upload_single_member_zip, buf, group_number, folder_name, on_progress,
+                get_webdav_new_files_dir(),  # base_dir
             )
             log.info("Student archive %s from %s uploaded to group %s as %s/ (%d files)",
                      filename, user, group_number, folder_name, len(remote_paths))

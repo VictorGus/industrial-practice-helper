@@ -135,11 +135,12 @@ def _count_zip_files(buf: io.BytesIO, strip_prefix: str = "") -> int:
 
 
 def upload_zip(buf: io.BytesIO, filename: str, is_wrapped: bool = False,
-               on_progress=None, skip_zip_upload: bool = False) -> list[str]:
+               on_progress=None, skip_zip_upload: bool = False,
+               base_dir: str | None = None) -> list[str]:
     """Upload .zip and extract contents into a group folder.
 
     Zip name is {GROUP}.zip. Contents are extracted into
-    {UPLOAD_DIR}/{GROUP}/ — the group folder is created if it doesn't exist,
+    {base_dir}/{GROUP}/ — the group folder is created if it doesn't exist,
     or accumulated into if it does.
 
     If is_wrapped is True, the archive has a top-level {GROUP}/ folder that
@@ -148,6 +149,10 @@ def upload_zip(buf: io.BytesIO, filename: str, is_wrapped: bool = False,
     If skip_zip_upload is True, the .zip itself is not uploaded (useful when
     the archive is already on the remote disk).
 
+    base_dir defaults to the root upload directory. Pass a different value
+    (e.g. the "Новые файлы" bucket) to route new bot uploads elsewhere
+    without disturbing the sync/unpack layout.
+
     on_progress(uploaded_count, total_count) is called after each file upload.
 
     Returns list of uploaded remote paths.
@@ -155,17 +160,22 @@ def upload_zip(buf: io.BytesIO, filename: str, is_wrapped: bool = False,
     upload_dir = get_webdav_upload_dir()
     ensure_remote_dir(upload_dir)
 
+    if base_dir is None:
+        base_dir = upload_dir
+    elif base_dir != upload_dir:
+        ensure_remote_dir(base_dir)
+
     uploaded = []
 
     if not skip_zip_upload:
         # Upload the .zip itself
-        zip_remote = f"{upload_dir}{filename}"
+        zip_remote = f"{base_dir}{filename}"
         upload_bytes(buf, zip_remote)
         uploaded.append(zip_remote)
 
-    # Group folder: {UPLOAD_DIR}/{GROUP}/
+    # Group folder: {base_dir}/{GROUP}/
     group_name = filename[:-4]  # strip .zip
-    group_dir = f"{upload_dir}{group_name}/"
+    group_dir = f"{base_dir}{group_name}/"
     ensure_remote_dir(group_dir)
 
     # Prefix to strip from entry paths when wrapped
@@ -202,11 +212,15 @@ def upload_zip(buf: io.BytesIO, filename: str, is_wrapped: bool = False,
 
 
 def upload_single_member_zip(buf: io.BytesIO, group_number: str, folder_name: str,
-                             on_progress=None) -> list[str]:
-    """Upload a single student zip into {UPLOAD_DIR}/{GROUP}/{folder_name}/.
+                             on_progress=None,
+                             base_dir: str | None = None) -> list[str]:
+    """Upload a single student zip into {base_dir}/{GROUP}/{folder_name}/.
 
     The zip contents are placed directly into the member folder
     (top-level entries from the archive, no nesting by archive structure).
+
+    base_dir defaults to the root upload directory. Pass a different value
+    to route the upload into a parallel bucket (e.g. "Новые файлы").
 
     on_progress(uploaded_count, total_count) is called after each file upload.
 
@@ -215,7 +229,12 @@ def upload_single_member_zip(buf: io.BytesIO, group_number: str, folder_name: st
     upload_dir = get_webdav_upload_dir()
     ensure_remote_dir(upload_dir)
 
-    group_dir = f"{upload_dir}{group_number}/"
+    if base_dir is None:
+        base_dir = upload_dir
+    elif base_dir != upload_dir:
+        ensure_remote_dir(base_dir)
+
+    group_dir = f"{base_dir}{group_number}/"
     ensure_remote_dir(group_dir)
 
     member_dir = f"{group_dir}{folder_name}/"

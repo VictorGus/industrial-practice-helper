@@ -33,3 +33,12 @@ def get_webdav_upload_dir() -> str:
     return os.environ.get("YANDEX_WEBDAV_UPLOAD_DIR", "/Практики/")
 
 
+def get_webdav_new_files_dir() -> str:
+    """Destination for zip archives uploaded via the bot from 2026-04-15 onward.
+
+    Sync/status/unpack continue to read from the original upload dir; this
+    folder is a parallel bucket so admins can easily see what's new.
+    """
+    return f"{get_webdav_upload_dir()}Новые файлы/"
+
+
