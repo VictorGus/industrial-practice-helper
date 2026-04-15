@@ -2,9 +2,11 @@ import io
 import os
 import re
 import tempfile
+import time
 import zipfile
 
 from webdav3.client import Client
+from webdav3.exceptions import ResponseErrorCode
 
 from common.config import get_webdav_options, get_webdav_upload_dir
 from common.logger import log
@@ -77,9 +79,30 @@ def is_admin(username: str | None) -> bool:
 
 
 def ensure_remote_dir(path: str) -> None:
+    """Idempotently create a remote directory.
+
+    Calls mkdir directly without a prior `check`, so two concurrent callers
+    can't race on a TOCTOU window. webdav3 already swallows Yandex's 405
+    ("directory exists"). Yandex sometimes returns 500 when two MKCOLs
+    collide on the same path; we retry once after a short backoff and
+    treat the call as successful if the directory exists afterwards.
+    """
     client = _get_client()
-    if not client.check(path):
+    try:
         client.mkdir(path)
+        return
+    except ResponseErrorCode as e:
+        if e.code != 500:
+            raise
+        log.warning("MKCOL %s returned 500, retrying", path)
+
+    time.sleep(0.5)
+    try:
+        client.mkdir(path)
+        return
+    except ResponseErrorCode as e:
+        if e.code != 500 or not client.check(path):
+            raise
 
 
 def upload_bytes(buf: io.BytesIO, remote_path: str) -> None:
